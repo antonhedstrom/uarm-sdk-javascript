@@ -1,6 +1,6 @@
 
-const uArmSDK = require('./uarm/sdk');
-const findPort = require('./comm/find-port');
+const uArmSDK = require('./src/uarm/sdk');
+const findPort = require('./src/comm/find-port');
 
 const portRegexp = /Arduino/i;
 
