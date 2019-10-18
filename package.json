@@ -1,6 +1,6 @@
 {
   "name": "uarm-sdk-javascript",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Javascript SDK to controlling your uArm Swift Pro.",
   "main": "index.js",
   "engines": {
