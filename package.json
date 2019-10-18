@@ -10,8 +10,7 @@
     "serialport": "^7.1.5"
   },
   "devDependencies": {
-    "eslint": "^6.5.1",
-    "np": "^5.1.1"
+    "eslint": "^6.5.1"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
