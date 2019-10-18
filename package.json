@@ -1,21 +1,20 @@
 {
   "name": "uarm-sdk-javascript",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Javascript SDK to controlling your uArm Swift Pro.",
   "main": "index.js",
   "engines": {
     "node": ">=8.0.0"
   },
   "dependencies": {
-    "eslint": "^6.5.1",
     "serialport": "^7.1.5"
   },
   "devDependencies": {
+    "eslint": "^6.5.1",
     "np": "^5.1.1"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "publish": "np"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
