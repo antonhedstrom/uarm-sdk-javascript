@@ -1,12 +1,12 @@
 const SerialCommunication = require('../comm/serial-comm');
 const {
   LOG_LEVEL,
+  SERVO_HAND,
   MESSAGE_TICKING_FEEDBACK_PREFIX,
   TICKING_UARM_READY,
   MESSAGE_GCODE_SEND_PREFIX,
   MESSAGE_GCODE_RECEIVE_PREFIX,
   SPEED_DEFAULT,
-  RECEIVE_REGEXP,
   MESSAGE_ERROR_PREFIX,
   CARTESIAN_MODE,
 } = require('./constants');
@@ -14,10 +14,11 @@ const {
 const ERRORS = require('./errors');
 
 class uArmSDK {
-  constructor({ port, onError, autoOpen = true }) {
+  constructor({ port, onError, autoOpen = true, defaultSpeed }) {
     this.messageId = 1; // Bump by one for every message.
     this.waitingResponses = {}; // Object containing all unresponded messages.
 
+    this.defaultSpeed = defaultSpeed || SPEED_DEFAULT;
     this.onError = console.error;
     if (onError) {
       if (typeof onError !== 'function') {
@@ -48,23 +49,23 @@ class uArmSDK {
   }
 
   /**
-   * Write @param command to the serial port, prefixed with the GCODE prefix
+   * Write @param command to the serial port, prefixed with the Extended GCODE prefix
    * and a unique message id.
    * @param {string} command - The Robot command to be sent.
    * @param {Function} callback - To be called when data is received.
    */
-  sendCommand(command, callback) {
+  sendGCode(GCode, callback) {
     const newMsgId = this.messageId++;
     this.waitingResponses[newMsgId] = {
       timestamp: new Date().getTime(),
       callback,
-      command,
+      command: GCode,
     };
-    const GCODE = `${MESSAGE_GCODE_SEND_PREFIX}${newMsgId} ${command}`;
-    if (LOG_LEVEL > 0) {
-      console.log(`Sending: ${GCODE}`);
+    const extendedGCode = `${MESSAGE_GCODE_SEND_PREFIX}${newMsgId} ${GCode}`;
+    if (LOG_LEVEL > 10) {
+      console.log(`Sending: ${extendedGCode}`);
     }
-    this.serialPort.send(GCODE);
+    this.serialPort.send(extendedGCode);
   }
 
   /**
@@ -74,29 +75,29 @@ class uArmSDK {
    * @returns {nothing}
    */
   incoming(data) {
-    if (LOG_LEVEL > 0) {
-      console.log(`Got: ${data}`);
+    if (LOG_LEVEL > 10) {
+      console.log(`Incoming: <${data}>`);
     }
-    const parts = RECEIVE_REGEXP.exec(data);
+    const parts = /^(refer:|E|\$|@)(\d+)*\s+(.+)*/.exec(data);
     if (parts) {
       const {
         1: messageType,
         2: messageId,
         3: rest,
       } = parts;
-      console.log("TYPE", messageType, MESSAGE_ERROR_PREFIX);
       switch (messageType) {
         case MESSAGE_TICKING_FEEDBACK_PREFIX:
           console.log("UARM REPORTED: ", messageId, rest);
           break;
         case MESSAGE_ERROR_PREFIX: {
-          console.log("ERRORRRR", messageId);
+          const waiter = this.waitingResponses[messageId];
           const errorHandler = ERRORS[messageId];
-          if (errorHandler) {
-            this.onError(new Error(errorHandler));
-          } else {
-            this.onError(new Error(`Unknown error [${MESSAGE_ERROR_PREFIX}${messageId}]: ${rest}`));
-          }
+          let error = errorHandler ?
+            new Error(errorHandler) :
+            new Error(`Unknown error [${MESSAGE_ERROR_PREFIX}${messageId}]: ${rest}`);
+          waiter.callback(error);
+          this.onError(new Error(errorHandler));
+
           break;
         }
         case MESSAGE_GCODE_RECEIVE_PREFIX: {
@@ -104,7 +105,7 @@ class uArmSDK {
           if (!waiter) {
             throw new Error(`Unable to find message id: ${messageId}`);
           }
-          waiter.callback(rest);
+          waiter.callback(null, rest);
           this.waitingResponses[messageId] = null;
           break;
         }
@@ -124,16 +125,19 @@ class uArmSDK {
    */
   getPosition(mode = CARTESIAN_MODE) {
     return new Promise((resolve, reject) => {
-      this.sendCommand(mode === CARTESIAN_MODE ? 'P2220' : 'P2221', (data) => {
+      this.sendGCode(mode === CARTESIAN_MODE ? 'P2220' : 'P2221', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         if (!data.startsWith('ok')) {
-          reject('Didn\'t get "ok" as response');
+          return reject(`Didn't get "ok" as response, got ${data}`);
         }
         const regexp = mode === CARTESIAN_MODE ?
           new RegExp(/^ok\sX([-]*[0-9.]+)+\sY([-]*[0-9.]+)+\sZ([-]*[0-9.]+)+/) :
           new RegExp(/^ok\sS([-]*[0-9.]+)+\sR([-]*[0-9.]+)+\sH([-]*[0-9.]+)+/);
         const matches = regexp.exec(data);
         if (!matches) {
-          reject(`Unable to parse response: ${data}`);
+          return reject(`Unable to parse response: ${data}`);
         }
         let result = {};
         if (mode === CARTESIAN_MODE) {
@@ -157,14 +161,17 @@ class uArmSDK {
    */
   getJointsAngle() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2200', (data) => {
+      this.sendGCode('P2200', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         if (!data.startsWith('ok')) {
-          reject('Didn\'t get "ok" as response');
+          return reject(`Didn't get "ok" as response, got ${data}`);
         }
         const regexp = new RegExp(/^ok\sB([-]*[0-9.]+)+\sL([-]*[0-9.]+)+\sR([-]*[0-9.]+)+/);
         const matches = regexp.exec(data);
         if (!matches) {
-          reject(`Unable to parse response: ${data}`);
+          return reject(`Unable to parse response: ${data}`);
         }
 
         resolve({
@@ -182,7 +189,10 @@ class uArmSDK {
    */
   getDeviceName() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2201', (data) => {
+      this.sendGCode('P2201', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -194,7 +204,10 @@ class uArmSDK {
    */
   getHardwareVersion() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2202', (data) => {
+      this.sendGCode('P2202', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -206,7 +219,10 @@ class uArmSDK {
    */
   getSoftwareVersion() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2203', (data) => {
+      this.sendGCode('P2203', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -218,7 +234,10 @@ class uArmSDK {
    */
   getAPIVersion() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2204', (data) => {
+      this.sendGCode('P2204', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -230,7 +249,10 @@ class uArmSDK {
    */
   getUid() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2205', (data) => {
+      this.sendGCode('P2205', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -244,12 +266,15 @@ class uArmSDK {
    * @param {number} speed - Speed in mm/min
    * @returns {Promise} - A promise that will be resolved when uArm respond.
    */
-  move(x, y, z, speed = SPEED_DEFAULT) {
+  move(x, y, z, speed) {
     return new Promise((resolve, reject) => {
-      const command = `G0 X${x} Y${y} Z${z} F${speed}`;
-      this.sendCommand(command, (data) => {
+      const command = `G0 X${x.toFixed(4)} Y${y.toFixed(4)} Z${z.toFixed(4)} F${speed || this.defaultSpeed}`;
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         if (data !== 'ok') {
-          return reject('Didn\'t get "ok" as response');
+          return reject(`Didn't get "ok" as response, got ${data}`);
         }
         resolve();
       });
@@ -264,10 +289,13 @@ class uArmSDK {
    * @param {number} speed - Speed in mm/min
    * @returns {Promise} - A promise that will be resolved when uArm respond.
    */
-  movePolar(stretch, rotation, height, speed = SPEED_DEFAULT) {
+  movePolar(stretch, rotation, height, speed) {
     return new Promise((resolve, reject) => {
-      const command = `G2201 S${stretch} R${rotation} H${height} F${speed}`;
-      this.sendCommand(command, (data) => {
+      const command = `G2201 S${stretch} R${rotation} H${height} F${speed || this.defaultSpeed}`;
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -281,11 +309,30 @@ class uArmSDK {
    */
   moveMotor(jointID, angle) {
     return new Promise((resolve, reject) => {
-      const command = `G2202 N${jointID} V${angle}`;
-      this.sendCommand(command, (data) => {
+      this.sendGCode(`G2202 N${jointID} V${angle}`, (error, data) => {
         // TODO: Implement error handling on this level.
         // For uArm.moveMotor(1, 45) I am getting this as respons:
         // $X E21
+        if (error) {
+          return reject(error);
+        }
+        resolve(data);
+      });
+    });
+  }
+
+  /**
+   * Set wrist angle
+   * @param {number} angle - The Angle to be set (0-180).
+   * @returns {Promise} - A promise that will be resolved when uArm respond.
+   */
+  setWrist(angle) {
+    return new Promise((resolve, reject) => {
+      this.sendGCode(`G2202 N${SERVO_HAND} V${angle}`, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
+        // TODO: Implement error handling on this level.
         resolve(data);
       });
     });
@@ -299,10 +346,21 @@ class uArmSDK {
    * @param {number} speed - Speed in mm/min
    * @returns {Promise} - A promise that will be resolved when uArm respond.
    */
-  moveRelative(x = 0, y = 0, z = 0, speed = SPEED_DEFAULT) {
+  moveRelative(x = 0, y = 0, z = 0, speed) {
     return new Promise((resolve, reject) => {
-      const command = `G2204 X${x} Y${y} Z${z} F${speed}`;
-      this.sendCommand(command, (data) => {
+      const command = `G2204 X${x.toFixed(4)} Y${y.toFixed(4)} Z${z.toFixed(4)} F${speed || this.defaultSpeed}`;
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
+        const parts = /^(ok|E)(\d+)*/.exec(data);
+        if (!parts) {
+          return reject(`Unable to parse data, got ${data}`);
+        }
+        if (parts[1] === 'E') {
+          const errorCode = parts[2];
+          return reject(ERRORS[errorCode] ? ERRORS[errorCode] : 'Unknown error');
+        }
         resolve(data);
       });
     });
@@ -316,10 +374,13 @@ class uArmSDK {
    * @param {number} speed - Speed in mm/min
    * @returns {Promise} - A promise that will be resolved when uArm respond.
    */
-  movePolarRelative(stretch, rotation, height, speed = SPEED_DEFAULT) {
+  movePolarRelative(stretch, rotation, height, speed) {
     return new Promise((resolve, reject) => {
-      const command = `G2205 S${stretch} R${rotation} H${height} F${speed}`;
-      this.sendCommand(command, (data) => {
+      const command = `G2205 S${stretch} R${rotation} H${height} F${speed || this.defaultSpeed}`;
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });
@@ -334,9 +395,12 @@ class uArmSDK {
   buzz(frequence = 1000, delay = 300) {
     return new Promise((resolve, reject) => {
       const command = `M2210 F${frequence} T${delay}`;
-      this.sendCommand(command, (data) => {
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         if (data !== 'ok') {
-          return reject('Didn\'t get "ok" as response');
+          return reject(`Didn't get "ok" as response, got ${data}`);
         }
         resolve();
       });
@@ -351,9 +415,12 @@ class uArmSDK {
   setPump(on) {
     return new Promise((resolve, reject) => {
       const command = `M2231 V${on ? 1 : 0}`;
-      this.sendCommand(command, (data) => {
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         if (data !== 'ok') {
-          return reject('Didn\'t get "ok" as response');
+          return reject(`Didn't get "ok" as response, got ${data}`);
         }
         resolve();
       });
@@ -366,24 +433,45 @@ class uArmSDK {
    */
   getPumpStatus() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2231', (data) => {
-        resolve(data);
+      this.sendGCode('P2231', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
+        if (!data.startsWith('ok')) {
+          return reject(`Didn't get "ok" as response, got ${data}`);
+        }
+        const regexp = new RegExp(/^ok\sV([01]+)/);
+        const matches = regexp.exec(data);
+        if (!matches) {
+          return reject(`Unable to parse response: ${data}`);
+        }
+        resolve(matches[1] === "1" ? true : false);
       });
     });
   }
 
   /**
    * Turn the gripper on/off.
+   * Will manually delay promise so device got time to close / open. We will
+   * wait longer time while closing since we probably want to grip something.
+   * Delay is adjustable by passing 'delay' param.
    * @param {boolean} on - Wheter to turn gripper on or off.
+   * @param {number} delay - Delay in ms to wait befor resolving promise. The device
+   * is responding "ok" as soon as operation has started.
    */
-  setGripper(on) {
+  setGripper(on, delay) {
     return new Promise((resolve, reject) => {
       const command = `M2232 V${on ? 1 : 0}`;
-      this.sendCommand(command, (data) => {
-        if (data !== 'ok') {
-          return reject('Didn\'t get "ok" as response');
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
         }
-        resolve();
+        if (data !== 'ok') {
+          return reject(`Didn't get "ok" as response, got ${data}`);
+        }
+        setTimeout(() => {
+          resolve();
+        }, delay || on ? 2500 : 1400);
       });
     });
   }
@@ -394,8 +482,42 @@ class uArmSDK {
    */
   getGripperStatus() {
     return new Promise((resolve, reject) => {
-      this.sendCommand('P2232', (data) => {
-        resolve(data);
+      this.sendGCode('P2232', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
+        if (!data.startsWith('ok')) {
+          return reject(`Didn't get "ok" as response, got ${data}`);
+        }
+        const regexp = new RegExp(/^ok\sV([01]+)/);
+        const matches = regexp.exec(data);
+        if (!matches) {
+          return reject(`Unable to parse response: ${data}`);
+        }
+        resolve(matches[1] === "1" ? true : false);
+      });
+    });
+  }
+
+  /**
+   * Get current mode.
+   * @returns {Promise} - A promise that will be resolved when uArm respond.
+   */
+  getCurrentMode() {
+    return new Promise((resolve, reject) => {
+      this.sendGCode('P2400', (error, data) => {
+        if (error) {
+          return reject(error);
+        }
+        if (!data.startsWith('ok')) {
+          return reject(`Didn't get "ok" as response, got ${data}`);
+        }
+        const regexp = new RegExp(/^ok\sV([0123]+)/);
+        const matches = regexp.exec(data);
+        if (!matches) {
+          return reject(`Unable to parse response: ${data}`);
+        }
+        resolve(matches[1]);
       });
     });
   }
@@ -408,7 +530,10 @@ class uArmSDK {
   delay(milliseconds) {
     return new Promise((resolve, reject) => {
       const command = `G2004 P${milliseconds}`;
-      this.sendCommand(command, (data) => {
+      this.sendGCode(command, (error, data) => {
+        if (error) {
+          return reject(error);
+        }
         resolve(data);
       });
     });

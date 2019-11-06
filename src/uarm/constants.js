@@ -8,12 +8,25 @@ module.exports = {
   MESSAGE_TICKING_FEEDBACK_PREFIX: "@",
   MESSAGE_ERROR_PREFIX: "E",
 
-  RECEIVE_REGEXP: new RegExp(/^(refer:|E|\$|@)(\d+)*\s+(.+)*/),
-  SPEED_DEFAULT: 500,
+  SPEED_DEFAULT: 500, // mm/min
 
-  // Modes
+  // Coordinate modes
   CARTESIAN_MODE: 1,
   POLAR_MODE: 2,
+
+  // uArm modes
+  MODES: {
+    NORMAL: 0,
+    LASER: 1,
+    PRINTING_3D: 2,
+    UNIVERSAL_HOLDER: 3,
+  },
+
+  // Servos / motors
+  SERVO_BOTTOM: 0,
+  SERVO_LEFT: 1,
+  SERVO_RIGHT: 2,
+  SERVO_HAND: 3,
 
   // MESSAGE_TICKING_FEEDBACK_PREFIX
   TICKING_UARM_READY: 1,
